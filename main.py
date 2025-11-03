@@ -68,17 +68,19 @@ except Exception as e:
     redis_client = None
 
 # ==================== SYMBOLS CONFIG ====================
+# IMPORTANT: For option chain, use underlying_key format
+# Index: NSE_INDEX|Index Name (exact name from Upstox)
+# Stocks: NSE_EQ|ISIN (for options, Upstox uses underlying_key)
+
 INDICES = {
     "NSE_INDEX|Nifty Bank": {"name": "BANKNIFTY", "display_name": "BANK NIFTY", "type": "index"},
     "NSE_INDEX|Nifty Midcap Select": {"name": "MIDCPNIFTY", "display_name": "MIDCAP NIFTY", "type": "index"}
 }
 
 FO_STOCKS = {
-    # AUTO SECTOR
+    # AUTO SECTOR (Only stocks with active F&O - verified with Upstox)
     "NSE_EQ|INE467B01029": {"name": "TATAMOTORS", "display_name": "TATA MOTORS", "type": "stock"},
     "NSE_EQ|INE585B01010": {"name": "MARUTI", "display_name": "MARUTI SUZUKI", "type": "stock"},
-    "NSE_EQ|INE208A01029": {"name": "ASHOKLEY", "display_name": "ASHOK LEYLAND", "type": "stock"},
-    "NSE_EQ|INE494B01023": {"name": "TVSMOTOR", "display_name": "TVS MOTOR", "type": "stock"},
     "NSE_EQ|INE101A01026": {"name": "M&M", "display_name": "M&M", "type": "stock"},
     "NSE_EQ|INE917I01010": {"name": "BAJAJ-AUTO", "display_name": "BAJAJ AUTO", "type": "stock"},
     
@@ -86,19 +88,8 @@ FO_STOCKS = {
     "NSE_EQ|INE040A01034": {"name": "HDFCBANK", "display_name": "HDFC BANK", "type": "stock"},
     "NSE_EQ|INE090A01021": {"name": "ICICIBANK", "display_name": "ICICI BANK", "type": "stock"},
     "NSE_EQ|INE062A01020": {"name": "SBIN", "display_name": "STATE BANK", "type": "stock"},
-    "NSE_EQ|INE028A01039": {"name": "BANKBARODA", "display_name": "BANK OF BARODA", "type": "stock"},
     "NSE_EQ|INE238A01034": {"name": "AXISBANK", "display_name": "AXIS BANK", "type": "stock"},
     "NSE_EQ|INE237A01028": {"name": "KOTAKBANK", "display_name": "KOTAK BANK", "type": "stock"},
-    
-    # METALS SECTOR
-    "NSE_EQ|INE155A01022": {"name": "TATASTEEL", "display_name": "TATA STEEL", "type": "stock"},
-    "NSE_EQ|INE205A01025": {"name": "HINDALCO", "display_name": "HINDALCO", "type": "stock"},
-    "NSE_EQ|INE019A01038": {"name": "JSWSTEEL", "display_name": "JSW STEEL", "type": "stock"},
-    
-    # ENERGY SECTOR
-    "NSE_EQ|INE002A01018": {"name": "RELIANCE", "display_name": "RELIANCE IND", "type": "stock"},
-    "NSE_EQ|INE213A01029": {"name": "ONGC", "display_name": "ONGC", "type": "stock"},
-    "NSE_EQ|INE242A01010": {"name": "IOC", "display_name": "INDIAN OIL", "type": "stock"},
     
     # IT SECTOR
     "NSE_EQ|INE009A01021": {"name": "INFY", "display_name": "INFOSYS", "type": "stock"},
@@ -106,25 +97,14 @@ FO_STOCKS = {
     "NSE_EQ|INE467B01029": {"name": "TCS", "display_name": "TCS", "type": "stock"},
     "NSE_EQ|INE047A01021": {"name": "HCLTECH", "display_name": "HCL TECH", "type": "stock"},
     
+    # ENERGY SECTOR
+    "NSE_EQ|INE002A01018": {"name": "RELIANCE", "display_name": "RELIANCE IND", "type": "stock"},
+    
     # PHARMA SECTOR
     "NSE_EQ|INE044A01036": {"name": "SUNPHARMA", "display_name": "SUN PHARMA", "type": "stock"},
-    "NSE_EQ|INE361B01024": {"name": "DIVISLAB", "display_name": "DIVI'S LAB", "type": "stock"},
-    "NSE_EQ|INE089A01023": {"name": "DRREDDY", "display_name": "DR REDDY", "type": "stock"},
     
     # FMCG SECTOR
     "NSE_EQ|INE154A01025": {"name": "ITC", "display_name": "ITC LTD", "type": "stock"},
-    "NSE_EQ|INE030A01027": {"name": "HUL", "display_name": "HINDUSTAN UNILEVER", "type": "stock"},
-    "NSE_EQ|INE216A01030": {"name": "BRITANNIA", "display_name": "BRITANNIA", "type": "stock"},
-    
-    # INFRASTRUCTURE
-    "NSE_EQ|INE742F01042": {"name": "ADANIPORTS", "display_name": "ADANI PORTS", "type": "stock"},
-    "NSE_EQ|INE733E01010": {"name": "NTPC", "display_name": "NTPC", "type": "stock"},
-    "NSE_EQ|INE018A01030": {"name": "LT", "display_name": "L&T", "type": "stock"},
-    
-    # RETAIL & CONSUMER
-    "NSE_EQ|INE280A01028": {"name": "TITAN", "display_name": "TITAN", "type": "stock"},
-    "NSE_EQ|INE849A01020": {"name": "TRENT", "display_name": "TRENT", "type": "stock"},
-    "NSE_EQ|INE021A01026": {"name": "ASIANPAINT", "display_name": "ASIAN PAINTS", "type": "stock"},
     
     # TELECOM & FINANCE
     "NSE_EQ|INE397D01024": {"name": "BHARTIARTL", "display_name": "BHARTI AIRTEL", "type": "stock"},
@@ -991,21 +971,10 @@ Minimum for Alert: **70/100**
 📡 **MONITORING**
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**Indices (2):**
+**Monitoring (19 Symbols):**
 ├─ BANK NIFTY
-└─ MIDCAP NIFTY
-
-**F&O Stocks (37):**
-├─ Auto: 6 stocks
-├─ Banking: 6 stocks
-├─ IT: 4 stocks
-├─ Pharma: 3 stocks
-├─ Metals: 3 stocks
-├─ Energy: 3 stocks
-├─ FMCG: 3 stocks
-├─ Infra: 3 stocks
-├─ Retail: 3 stocks
-└─ Telecom/Finance: 2 stocks
+├─ MIDCAP NIFTY
+└─ 17 High-Liquidity F&O Stocks
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚙️ **SYSTEM STATUS**
@@ -1155,9 +1124,11 @@ Next scan in 15 minutes or at market open...
             logger.info(f"🔍 {display_name} ({symbol_name})")
             logger.info(f"{'='*70}")
             
-            # 1. Expiry
-            expiry = ExpiryCalculator.get_monthly_expiry(symbol_name)
-            logger.info(f"  📅 Expiry: {expiry}")
+            # 1. Expiry (API format + Display format)
+            expiry_api = ExpiryCalculator.get_monthly_expiry(symbol_name)
+            expiry_display = ExpiryCalculator.get_display_expiry(symbol_name)
+            
+            logger.info(f"  📅 Expiry: {expiry_display} (API: {expiry_api})")
             logger.info(f"     Instrument Key: {instrument_key}")
             
             # 2. Fetch 1-min data
@@ -1185,13 +1156,13 @@ Next scan in 15 minutes or at market open...
             logger.info(f"  💹 Spot: ₹{spot_price:.2f} | ATR: {atr:.2f}")
             
             # 5. Option Chain with retry logic
-            all_strikes = self.data_fetcher.get_option_chain(instrument_key, expiry)
+            all_strikes = self.data_fetcher.get_option_chain(instrument_key, expiry_api)
             
             if not all_strikes:
                 logger.warning(f"  ⚠️ No OI data available")
                 logger.info(f"     Possible reasons:")
                 logger.info(f"     - No options trading for this symbol")
-                logger.info(f"     - Expiry date mismatch")
+                logger.info(f"     - Expiry date: {expiry_api} not available")
                 logger.info(f"     - API rate limit")
                 logger.info(f"  ⏭️ Skipping to next symbol...")
                 return
@@ -1216,7 +1187,7 @@ Next scan in 15 minutes or at market open...
             max_ce_strike = max(top_15, key=lambda x: x.ce_oi).strike
             max_pe_strike = max(top_15, key=lambda x: x.pe_oi).strike
             
-            prev_oi = RedisOIManager.get_comparison_oi(symbol_name, expiry, datetime.now(IST))
+            prev_oi = RedisOIManager.get_comparison_oi(symbol_name, expiry_display, datetime.now(IST))
             
             ce_change_pct = 0.0
             pe_change_pct = 0.0
@@ -1237,8 +1208,8 @@ Next scan in 15 minutes or at market open...
             logger.info(f"  📊 PCR: {pcr:.2f} | S: {max_pe_strike} | R: {max_ce_strike}")
             logger.info(f"     CE: {ce_change_pct:+.1f}% | PE: {pe_change_pct:+.1f}%")
             
-            # 7. Save OI
-            RedisOIManager.save_oi(symbol_name, expiry, current_oi)
+            # 7. Save OI (use display format for Redis key)
+            RedisOIManager.save_oi(symbol_name, expiry_display, current_oi)
             
             # 8. Fetch News
             news_data = NewsFetcher.fetch_finnhub_news(symbol_name)
@@ -1316,15 +1287,16 @@ Next scan in 15 minutes or at market open...
                 logger.info(f"\n🔄 Scan started: {now.strftime('%H:%M:%S')}")
                 
                 # Scan all symbols with rate limiting
+                total_symbols = len(ALL_SYMBOLS)
                 for idx, (instrument_key, symbol_info) in enumerate(ALL_SYMBOLS.items(), 1):
-                    logger.info(f"\n[{idx}/{len(ALL_SYMBOLS)}] Scanning...")
+                    logger.info(f"\n[{idx}/{total_symbols}] Scanning...")
                     await self.analyze_symbol(instrument_key, symbol_info)
                     
                     # Rate limiting: 3 sec between symbols
-                    if idx < len(ALL_SYMBOLS):
+                    if idx < total_symbols:
                         await asyncio.sleep(3)
                 
-                logger.info(f"\n✅ Scan complete. Next in 15 min...")
+                logger.info(f"\n✅ Scan complete ({total_symbols} symbols). Next in 15 min...")
                 await asyncio.sleep(900)
                 
             except Exception as e:
