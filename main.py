@@ -704,6 +704,14 @@ Sentiment: {oi_analysis['sentiment']}
 3. Price⬆️ + OI⬇️ = SHORT COVERING (Weak Bullish) = Score +15
 4. Price⬇️ + OI⬇️ = LONG UNWINDING (Weak Bearish) = Score +15
 
+**CRITICAL: OPPORTUNITY MAPPING (F&O CORRECT WAY):**
+- BULLISH MARKET = BUY CALL OPTIONS = Return "CE_BUY"
+- BEARISH MARKET = BUY PUT OPTIONS = Return "PE_BUY"
+
+**Example:**
+- If 1H BULLISH + 15M Bullish pattern + OI bullish = Return "CE_BUY"
+- If 1H BEARISH + 15M Bearish pattern + OI bearish = Return "PE_BUY"
+
 **SCORING (/125):**
 - Chart: /50 (1H trend + 15M patterns + S/R)
 - OI: /50 (Price+OI analysis + Strength)
@@ -739,7 +747,12 @@ Sentiment: {oi_analysis['sentiment']}
   "ai_reasoning": "Chart(38/50): Details. OI(35/50): Details. Total: 93/125"
 }}
 
-Reply JSON only. If Score <70, return "WAIT"."""
+**IMPORTANT:** 
+- Bullish setup = "CE_BUY" (Call Buy)
+- Bearish setup = "PE_BUY" (Put Buy)
+- If Score <70, return "WAIT"
+
+Reply JSON only."""
         
         return prompt
     
@@ -900,10 +913,19 @@ class ChartGenerator:
             ax1.axhline(analysis.target_2, color=GREEN, linewidth=1.5, linestyle=':', alpha=0.6)
         
         # Info box
-        signal_emoji = "🟢" if analysis.opportunity == "CE_BUY" else ("🔴" if analysis.opportunity == "PE_BUY" else "⏸️")
+        if analysis.opportunity == "CE_BUY":
+            signal_emoji = "🟢"
+            signal_text = "CALL BUY"
+        elif analysis.opportunity == "PE_BUY":
+            signal_emoji = "🔴"
+            signal_text = "PUT BUY"
+        else:
+            signal_emoji = "⏸️"
+            signal_text = "WAIT"
+        
         score_emoji = "🔥" if analysis.total_score >= 85 else ("✅" if analysis.total_score >= 70 else "⚠️")
         
-        info = f"""{signal_emoji} {analysis.opportunity}
+        info = f"""{signal_emoji} {signal_text}
 
 {score_emoji} SCORE: {analysis.total_score}/125
 ├─ Chart: {analysis.chart_score}/50
@@ -982,23 +1004,38 @@ class TelegramNotifier:
     
     async def send_alert(self, symbol: str, display_name: str, analysis: AIAnalysis,
                         oi_analysis: Dict, chart_path: str, expiry: str):
-        """✅ COMPACT ALERT"""
+        """✅ COMPACT ALERT WITH CORRECT SIGNAL"""
         try:
             # Send chart
             with open(chart_path, 'rb') as photo:
                 await self.bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo)
             
-            signal_emoji = "🟢" if analysis.opportunity == "CE_BUY" else "🔴"
+            # ✅ CORRECT SIGNAL EMOJI & TEXT
+            if analysis.opportunity == "CE_BUY":
+                signal_emoji = "🟢"
+                signal_text = "CALL BUY"
+                market_bias = "BULLISH"
+            elif analysis.opportunity == "PE_BUY":
+                signal_emoji = "🔴"
+                signal_text = "PUT BUY"
+                market_bias = "BEARISH"
+            else:
+                signal_emoji = "⏸️"
+                signal_text = "WAIT"
+                market_bias = "NEUTRAL"
+            
             score_emoji = "🔥" if analysis.total_score >= 85 else "✅"
             
             # ✅ COMPACT MESSAGE
             msg = f"""━━━━━━━━━━━━━━━━━━━━━━
-{signal_emoji} **{display_name} {analysis.opportunity}**
+{signal_emoji} **{display_name} {signal_text}**
 ━━━━━━━━━━━━━━━━━━━━━━
 
 {score_emoji} **SCORE: {analysis.total_score}/125**
 Chart: {analysis.chart_score} | OI: {analysis.oi_score} | Align: {analysis.alignment_score}
 **Confidence: {analysis.confidence}%**
+
+**Market Bias: {market_bias}**
 
 ━━━━━━━━━━━━━━━━━━━━━━
 📊 **MULTI-TIMEFRAME**
@@ -1073,7 +1110,7 @@ OI: {oi_analysis['oi_trend']} ({oi_analysis['oi_change_pct']:+.1f}%)
 ━━━━━━━━━━━━━━━━━━━━━━"""
             
             await self.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
-            logger.info(f"  ✅ Compact alert sent")
+            logger.info(f"  ✅ Alert sent: {signal_text}")
             
         except Exception as e:
             logger.error(f"Alert error: {e}")
