@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-HYBRID TRADING BOT v24.0 - GOLDEN SETUP FINDER
-===============================================
-✅ Multi-Timeframe: 1H (Trend) + 15M (Analysis) + 5M (Entry/Exit)
-✅ Golden Setup Finder (4-Signal Confluence)
-✅ Token-Optimized (Compressed Data)
-✅ Corrected OI Logic
-✅ Professional Chart Generation
+HYBRID TRADING BOT v25.0 - DEEPSEEK V3 + FINNHUB PROFESSIONAL
+==============================================================
+✅ DeepSeek v3 AI Analysis (All Patterns + Chart Rules)
+✅ Finnhub News Integration
+✅ Multi-Timeframe: 1H (Trend) + 15M (Analysis) + 5M (Entry)
+✅ OHLC Short Format (Token Optimized)
+✅ Extended Candle Data: 1H (50), 15M (500), 5M (100)
+✅ Volume + OI + Chart + Candlestick Confluence
+✅ Professional Rules from Research
 """
 
 import os
@@ -22,13 +24,11 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import pandas as pd
 import numpy as np
-import io
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import traceback
-import re
 import redis
 
 # ==================== CONFIGURATION ====================
@@ -36,20 +36,36 @@ IST = pytz.timezone('Asia/Kolkata')
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(), logging.FileHandler('hybrid_bot.log')]
+    handlers=[logging.StreamHandler(), logging.FileHandler('deepseek_bot.log')]
 )
 logger = logging.getLogger(__name__)
 
-# API Keys
+# API Keys & Environment Variables
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', 'your_token')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', 'your_key')
 FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY', 'your_key')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', 'your_token')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'your_chat_id')
 
-# Redis
+# Redis Connection (Railway.app support)
+# Format: redis://default:password@host:port
+# Example Railway URL: redis://default:abc123@redis.railway.internal:6379
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
-redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=5)
+
+try:
+    redis_client = redis.from_url(
+        REDIS_URL, 
+        decode_responses=True, 
+        socket_connect_timeout=5,
+        socket_keepalive=True,
+        retry_on_timeout=True
+    )
+    # Test connection
+    redis_client.ping()
+    logger.info("✅ Redis connected successfully")
+except Exception as e:
+    logger.error(f"❌ Redis connection failed: {e}")
+    redis_client = None
 
 # ==================== SYMBOLS CONFIG ====================
 INDICES = {
@@ -130,8 +146,6 @@ class StrikeData:
     pe_oi: int
     ce_volume: int
     pe_volume: int
-    ce_price: float
-    pe_price: float
 
 @dataclass
 class OIData:
@@ -144,30 +158,30 @@ class OIData:
     pe_oi_change_pct: float = 0.0
 
 @dataclass
-class GoldenSetup:
-    signal: str  # "HIGH_PROB_BUY" / "HIGH_PROB_SELL" / "WAIT"
+class NewsData:
+    headline: str
+    sentiment: str
+    impact_score: int
+    source: str
+    datetime: int
+
+@dataclass
+class AIAnalysis:
+    opportunity: str  # "CE_BUY" / "PE_BUY" / "WAIT"
     confidence: int
-    zone_price: float
-    trigger_pattern: str
-    oi_confirmation: str
-    confluence_count: int
     entry_price: float
     stop_loss: float
     target_1: float
     target_2: float
-    reason: str
-    chart_support: float
-    chart_resistance: float
-
-@dataclass
-class MultiTimeframeData:
-    df_1h: pd.DataFrame
-    df_15m: pd.DataFrame
-    df_5m: pd.DataFrame
-    spot_price: float
-    atr: float
-    trend_1h: str
-    trend_1h_confidence: int
+    risk_reward: str
+    chart_bias: str
+    market_structure: str
+    pattern_signal: str
+    oi_flow_signal: str
+    support_levels: List[float]
+    resistance_levels: List[float]
+    risk_factors: List[str]
+    ai_reasoning: str
 
 # ==================== EXPIRY CALCULATOR ====================
 class ExpiryCalculator:
@@ -219,225 +233,55 @@ class RedisOIManager:
             return OIData(
                 pcr=parsed['pcr'], support_strike=parsed['support'], resistance_strike=parsed['resistance'],
                 ce_oi_change_pct=parsed.get('ce_oi_change_pct', 0), pe_oi_change_pct=parsed.get('pe_oi_change_pct', 0),
-                strikes_data=[StrikeData(s['strike'], s['ce_oi'], s['pe_oi'], 0, 0, 0, 0) for s in parsed['strikes']],
+                strikes_data=[StrikeData(s['strike'], s['ce_oi'], s['pe_oi'], 0, 0) for s in parsed['strikes']],
                 timestamp=comparison_time
             )
         return None
 
-# ==================== GOLDEN SETUP FINDER ====================
-class GoldenSetupFinder:
+# ==================== NEWS FETCHER ====================
+class NewsFetcher:
     @staticmethod
-    def find_support_resistance(df: pd.DataFrame, spot_price: float) -> Dict:
-        """Chart वरून Support/Resistance zones शोधणे"""
-        df_tail = df.tail(50)
-        
-        support_zones = []
-        resistance_zones = []
-        
-        for i in range(2, len(df_tail)-2):
-            # Swing Low
-            if (df_tail.iloc[i]['low'] < df_tail.iloc[i-1]['low'] and 
-                df_tail.iloc[i]['low'] < df_tail.iloc[i-2]['low'] and
-                df_tail.iloc[i]['low'] < df_tail.iloc[i+1]['low'] and
-                df_tail.iloc[i]['low'] < df_tail.iloc[i+2]['low']):
-                support_zones.append(df_tail.iloc[i]['low'])
+    def fetch_finnhub_news(symbol_name: str) -> Optional[NewsData]:
+        """Fetch latest news from Finnhub API"""
+        try:
+            today = datetime.now(IST).date()
+            yesterday = today - timedelta(days=1)
             
-            # Swing High
-            if (df_tail.iloc[i]['high'] > df_tail.iloc[i-1]['high'] and 
-                df_tail.iloc[i]['high'] > df_tail.iloc[i-2]['high'] and
-                df_tail.iloc[i]['high'] > df_tail.iloc[i+1]['high'] and
-                df_tail.iloc[i]['high'] > df_tail.iloc[i+2]['high']):
-                resistance_zones.append(df_tail.iloc[i]['high'])
-        
-        nearest_support = max([s for s in support_zones if s < spot_price], default=spot_price * 0.98)
-        nearest_resistance = min([r for r in resistance_zones if r > spot_price], default=spot_price * 1.02)
-        
-        return {"support": nearest_support, "resistance": nearest_resistance}
-    
-    @staticmethod
-    def detect_patterns(df: pd.DataFrame) -> List[str]:
-        """Last 3 candles मधून patterns शोधणे"""
-        patterns = []
-        recent = df.tail(3)
-        
-        if len(recent) < 2:
-            return ["NONE"]
-        
-        for i in range(1, len(recent)):
-            prev = recent.iloc[i-1]
-            curr = recent.iloc[i]
+            response = requests.get(
+                "https://finnhub.io/api/v1/company-news",
+                params={
+                    "symbol": symbol_name,
+                    "from": yesterday.strftime('%Y-%m-%d'),
+                    "to": today.strftime('%Y-%m-%d'),
+                    "token": FINNHUB_API_KEY
+                },
+                timeout=10
+            )
             
-            body = abs(curr['close'] - curr['open'])
-            lower_shadow = (curr['open'] if curr['close'] > curr['open'] else curr['close']) - curr['low']
-            upper_shadow = curr['high'] - max(curr['open'], curr['close'])
-            
-            if lower_shadow > body * 2 and upper_shadow < body * 0.5:
-                patterns.append(f"HAMMER@{curr['close']:.0f}")
-            if upper_shadow > body * 2 and lower_shadow < body * 0.5:
-                patterns.append(f"SHOOTING_STAR@{curr['close']:.0f}")
-            if (curr['close'] > curr['open'] and prev['close'] < prev['open'] and
-                curr['open'] < prev['close'] and curr['close'] > prev['open']):
-                patterns.append(f"BULLISH_ENGULF@{curr['close']:.0f}")
-            if (curr['close'] < curr['open'] and prev['close'] > prev['open'] and
-                curr['open'] > prev['close'] and curr['close'] < prev['open']):
-                patterns.append(f"BEARISH_ENGULF@{curr['close']:.0f}")
-        
-        return patterns if patterns else ["NONE"]
-    
-    @staticmethod
-    def check_oi_confluence(patterns: List[str], current_oi: OIData, prev_oi: Optional[OIData]) -> Tuple[str, int]:
-        """OI flow ने pattern confirm करतोय का? (CORRECTED LOGIC)"""
-        if not prev_oi or patterns[0] == "NONE":
-            return "NO_CONFIRMATION", 0
-        
-        pattern = patterns[0].split('@')[0]
-        
-        # BULLISH PATTERNS
-        if pattern in ["HAMMER", "BULLISH_ENGULF"]:
-            if current_oi.ce_oi_change_pct < -5:  # Resistance weakening
-                return "✅ STRONG: CE_UNWIND (Resistance breaking)", 20
-            elif current_oi.pe_oi_change_pct > 10:  # Support strengthening
-                return "✅ MODERATE: PE_BUILD (Support forming)", 15
-            else:
-                return "⚠️ WEAK: OI neutral", 0
-        
-        # BEARISH PATTERNS
-        elif pattern in ["SHOOTING_STAR", "BEARISH_ENGULF"]:
-            if current_oi.pe_oi_change_pct < -5:  # Support weakening
-                return "✅ STRONG: PE_UNWIND (Support breaking)", 20
-            elif current_oi.ce_oi_change_pct > 10:  # Resistance strengthening
-                return "✅ MODERATE: CE_BUILD (Resistance forming)", 15
-            else:
-                return "⚠️ WEAK: OI neutral", 0
-        
-        return "NEUTRAL", 0
-    
-    @staticmethod
-    def find_golden_setup(df_15m: pd.DataFrame, df_5m: pd.DataFrame, spot_price: float, 
-                         atr: float, current_oi: OIData, prev_oi: Optional[OIData],
-                         trend_1h: str) -> GoldenSetup:
-        """🎯 Main Engine: 4-Signal Confluence"""
-        
-        # STEP 1: Chart Zones (15M)
-        zones = GoldenSetupFinder.find_support_resistance(df_15m, spot_price)
-        chart_support = zones['support']
-        chart_resistance = zones['resistance']
-        
-        # Zone Confluence Check
-        support_match = abs(chart_support - current_oi.support_strike) < 100
-        resistance_match = abs(chart_resistance - current_oi.resistance_strike) < 100
-        
-        distance_support = abs(spot_price - chart_support)
-        distance_resistance = abs(spot_price - chart_resistance)
-        
-        at_support = distance_support < atr * 1.5 and support_match
-        at_resistance = distance_resistance < atr * 1.5 and resistance_match
-        
-        if not (at_support or at_resistance):
-            return GoldenSetup(
-                signal="WAIT", confidence=0, zone_price=0, trigger_pattern="NONE",
-                oi_confirmation="Price not in confluence zone", confluence_count=0,
-                entry_price=spot_price, stop_loss=0, target_1=0, target_2=0,
-                reason="Not at High Probability Zone", chart_support=chart_support,
-                chart_resistance=chart_resistance
-            )
-        
-        # STEP 2: Trigger Pattern (15M)
-        patterns = GoldenSetupFinder.detect_patterns(df_15m)
-        
-        if patterns[0] == "NONE":
-            zone_name = "Support" if at_support else "Resistance"
-            return GoldenSetup(
-                signal="WAIT", confidence=0, zone_price=chart_support if at_support else chart_resistance,
-                trigger_pattern="NONE", oi_confirmation="Waiting for trigger",
-                confluence_count=2, entry_price=spot_price, stop_loss=0, target_1=0, target_2=0,
-                reason=f"At {zone_name} Zone (Chart+OI) but no pattern", 
-                chart_support=chart_support, chart_resistance=chart_resistance
-            )
-        
-        pattern_name = patterns[0].split('@')[0]
-        bullish_trigger = pattern_name in ["HAMMER", "BULLISH_ENGULF"]
-        bearish_trigger = pattern_name in ["SHOOTING_STAR", "BEARISH_ENGULF"]
-        
-        # Pattern-Zone match
-        if (at_support and not bullish_trigger) or (at_resistance and not bearish_trigger):
-            return GoldenSetup(
-                signal="WAIT", confidence=0, zone_price=chart_support if at_support else chart_resistance,
-                trigger_pattern=patterns[0], oi_confirmation="Pattern mismatch",
-                confluence_count=2, entry_price=spot_price, stop_loss=0, target_1=0, target_2=0,
-                reason=f"Pattern-Zone mismatch: {pattern_name} at {'Support' if at_support else 'Resistance'}",
-                chart_support=chart_support, chart_resistance=chart_resistance
-            )
-        
-        # STEP 3: OI Confirmation
-        oi_confirm, bonus = GoldenSetupFinder.check_oi_confluence(patterns, current_oi, prev_oi)
-        
-        if bonus < 10:
-            return GoldenSetup(
-                signal="WAIT", confidence=0, zone_price=chart_support if at_support else chart_resistance,
-                trigger_pattern=patterns[0], oi_confirmation=oi_confirm,
-                confluence_count=3, entry_price=spot_price, stop_loss=0, target_1=0, target_2=0,
-                reason=f"Zone+Pattern OK but {oi_confirm}",
-                chart_support=chart_support, chart_resistance=chart_resistance
-            )
-        
-        # STEP 4: Trend Filter (1H must align)
-        if bullish_trigger and trend_1h == "BEARISH":
-            return GoldenSetup(
-                signal="WAIT", confidence=0, zone_price=chart_support,
-                trigger_pattern=patterns[0], oi_confirmation=oi_confirm,
-                confluence_count=3, entry_price=spot_price, stop_loss=0, target_1=0, target_2=0,
-                reason=f"Bullish setup but 1H trend is BEARISH (counter-trend)",
-                chart_support=chart_support, chart_resistance=chart_resistance
-            )
-        
-        if bearish_trigger and trend_1h == "BULLISH":
-            return GoldenSetup(
-                signal="WAIT", confidence=0, zone_price=chart_resistance,
-                trigger_pattern=patterns[0], oi_confirmation=oi_confirm,
-                confluence_count=3, entry_price=spot_price, stop_loss=0, target_1=0, target_2=0,
-                reason=f"Bearish setup but 1H trend is BULLISH (counter-trend)",
-                chart_support=chart_support, chart_resistance=chart_resistance
-            )
-        
-        # 🎯 GOLDEN SETUP!
-        signal = "HIGH_PROB_BUY" if bullish_trigger else "HIGH_PROB_SELL"
-        zone_price = chart_support if at_support else chart_resistance
-        
-        # Entry/SL/Target from 5M chart
-        recent_5m = df_5m.tail(10)
-        entry = spot_price
-        
-        if bullish_trigger:
-            sl = min(recent_5m['low']) - (atr * 0.3)
-            risk = entry - sl
-            target_1 = entry + (risk * 2)
-            target_2 = entry + (risk * 3.5)
-        else:
-            sl = max(recent_5m['high']) + (atr * 0.3)
-            risk = sl - entry
-            target_1 = entry - (risk * 2)
-            target_2 = entry - (risk * 3.5)
-        
-        confidence = 95 if bonus >= 20 else 85
-        
-        reason = (
-            f"✅ 4-SIGNAL CONFLUENCE:\n"
-            f"1. 1H Trend: {trend_1h}\n"
-            f"2. Chart Zone: ₹{zone_price:.0f} (15M)\n"
-            f"3. OI Zone: {current_oi.support_strike if at_support else current_oi.resistance_strike}\n"
-            f"4. Trigger: {pattern_name} (15M)\n"
-            f"5. OI Flow: {oi_confirm}\n"
-            f"6. Entry/Exit: 5M precision"
-        )
-        
-        return GoldenSetup(
-            signal=signal, confidence=confidence, zone_price=zone_price,
-            trigger_pattern=patterns[0], oi_confirmation=oi_confirm,
-            confluence_count=4, entry_price=entry, stop_loss=sl,
-            target_1=target_1, target_2=target_2, reason=reason,
-            chart_support=chart_support, chart_resistance=chart_resistance
-        )
+            if response.status_code == 200:
+                news_list = response.json()
+                if news_list:
+                    latest = news_list[0]
+                    sentiment = latest.get('sentiment', 'neutral').upper()
+                    
+                    # Calculate impact score
+                    if sentiment == 'POSITIVE':
+                        impact = 25
+                    elif sentiment == 'NEGATIVE':
+                        impact = -25
+                    else:
+                        impact = 0
+                    
+                    return NewsData(
+                        headline=latest.get('headline', 'No headline')[:150],
+                        sentiment=sentiment,
+                        impact_score=impact,
+                        source='Finnhub',
+                        datetime=latest.get('datetime', 0)
+                    )
+        except Exception as e:
+            logger.error(f"  📰 News fetch error: {e}")
+        return None
 
 # ==================== MULTI-TIMEFRAME PROCESSOR ====================
 class MultiTimeframeProcessor:
@@ -449,50 +293,30 @@ class MultiTimeframeProcessor:
             'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
         }).dropna().reset_index()
         return resampled
-    
-    @staticmethod
-    def get_trend(df: pd.DataFrame) -> Tuple[str, int]:
-        """1H Trend identification"""
-        if len(df) < 20:
-            return "NEUTRAL", 50
-        
-        closes = df.tail(20)['close'].values
-        sma_20 = closes.mean()
-        current = closes[-1]
-        deviation = ((current - sma_20) / sma_20) * 100
-        
-        highs = df.tail(10)['high'].values
-        hh = sum(1 for i in range(1, len(highs)) if highs[i] > highs[i-1])
-        
-        if deviation > 1 and hh >= 6:
-            return "BULLISH", min(95, 60 + int(deviation * 5))
-        elif deviation < -1:
-            return "BEARISH", min(95, 60 + int(abs(deviation) * 5))
-        else:
-            return "NEUTRAL", 50
 
-# ==================== DATA COMPRESSOR ====================
+# ==================== DATA COMPRESSOR (OHLC SHORT FORMAT) ====================
 class DataCompressor:
     @staticmethod
-    def compress_candles(df: pd.DataFrame) -> str:
-        """Token-efficient summary"""
-        recent = df.tail(20)
-        bullish = sum(1 for _, r in recent.iterrows() if r['close'] > r['open'])
-        bearish = len(recent) - bullish
+    def compress_to_ohlc(df: pd.DataFrame, limit: int = None) -> str:
+        """
+        Convert DataFrame to ultra-short OHLC format
+        Format: [O:48500.5,H:48650.2,L:48480.1,C:48620.3,V:125000],...
+        """
+        if limit:
+            df = df.tail(limit)
         
-        highs = recent['high'].values
-        lows = recent['low'].values
-        hh = sum(1 for i in range(1, len(highs)) if highs[i] > highs[i-1])
-        ll = sum(1 for i in range(1, len(lows)) if lows[i] < lows[i-1])
+        ohlc_list = []
+        for _, row in df.iterrows():
+            ohlc_list.append(
+                f"[O:{row['open']:.1f},H:{row['high']:.1f},L:{row['low']:.1f},"
+                f"C:{row['close']:.1f},V:{int(row['volume'])}]"
+            )
         
-        current = df['close'].iloc[-1]
-        sma20 = df['close'].tail(20).mean()
-        
-        return f"PRICE:{current:.1f} ({'ABOVE' if current>sma20 else 'BELOW'} SMA20={sma20:.1f})|STRUCT:{bullish}🟢{bearish}🔴|HH:{hh}LL:{ll}"
+        return ','.join(ohlc_list)
     
     @staticmethod
     def compress_oi(current: OIData, prev: Optional[OIData]) -> str:
-        """Compressed OI insight"""
+        """Compressed OI with build/unwind detection"""
         if not prev:
             return f"PCR:{current.pcr:.2f}|S:{current.support_strike}|R:{current.resistance_strike}"
         
@@ -510,73 +334,397 @@ class DataCompressor:
                 if ce_chg < -0.10: ce_unwinds.append(s.strike)
                 if pe_chg < -0.10: pe_unwinds.append(s.strike)
         
-        result = f"PCR:{current.pcr:.2f}|"
-        if ce_builds: result += f"CE_BUILD:{','.join(map(str, ce_builds[:2]))}|"
-        if pe_builds: result += f"PE_BUILD:{','.join(map(str, pe_builds[:2]))}|"
-        if ce_unwinds: result += f"CE_UNWIND:{','.join(map(str, ce_unwinds[:2]))}|"
-        if pe_unwinds: result += f"PE_UNWIND:{','.join(map(str, pe_unwinds[:2]))}"
+        result = f"PCR:{current.pcr:.2f}|CE_CHG:{current.ce_oi_change_pct:+.1f}%|PE_CHG:{current.pe_oi_change_pct:+.1f}%"
+        if ce_builds: result += f"|CE_BUILD:{','.join(map(str, ce_builds[:2]))}"
+        if pe_builds: result += f"|PE_BUILD:{','.join(map(str, pe_builds[:2]))}"
+        if ce_unwinds: result += f"|CE_UNWIND:{','.join(map(str, ce_unwinds[:2]))}"
+        if pe_unwinds: result += f"|PE_UNWIND:{','.join(map(str, pe_unwinds[:2]))}"
         
-        return result.strip('|')
+        return result
+
+# ==================== DEEPSEEK V3 AI ANALYZER ====================
+class DeepSeekAnalyzer:
+    @staticmethod
+    def generate_professional_prompt(symbol: str, df_1h: pd.DataFrame, df_15m: pd.DataFrame,
+                                    df_5m: pd.DataFrame, spot_price: float, atr: float,
+                                    current_oi: OIData, prev_oi: Optional[OIData],
+                                    news: Optional[NewsData]) -> str:
+        """
+        PROFESSIONAL AI PROMPT
+        Based on research from Strike.money, StockCharts.com, TradingView
+        Includes all candlestick patterns + chart patterns + OI rules
+        """
+        
+        # Compress data to OHLC short format
+        ohlc_1h = DataCompressor.compress_to_ohlc(df_1h, limit=50)  # Last 50 candles
+        ohlc_15m = DataCompressor.compress_to_ohlc(df_15m, limit=500)  # Last 500 candles
+        ohlc_5m = DataCompressor.compress_to_ohlc(df_5m, limit=100)  # Last 100 candles
+        
+        # OI compression
+        oi_summary = DataCompressor.compress_oi(current_oi, prev_oi)
+        
+        # News section
+        news_section = ""
+        if news:
+            news_section = f"""
+**NEWS CONTEXT (Finnhub):**
+Headline: {news.headline}
+Sentiment: {news.sentiment}
+Impact: {"Positive bias (+25pts)" if news.impact_score > 0 else "Negative bias (-25pts)" if news.impact_score < 0 else "Neutral"}
+"""
+        
+        prompt = f"""You are an expert F&O price action trader specializing in Indian markets. Analyze using institutional-grade confluence.
+
+**INSTRUMENT:** {symbol}
+**SPOT PRICE:** ₹{spot_price:.2f}
+**ATR:** {atr:.2f}
+
+---
+
+**DATA PROVIDED (OHLC Short Format):**
+
+**1H TIMEFRAME (Last 50 candles - Trend Identification):**
+{ohlc_1h}
+
+**15M TIMEFRAME (Last 500 candles - Main Analysis):**
+{ohlc_15m}
+
+**5M TIMEFRAME (Last 100 candles - Entry/Exit Precision):**
+{ohlc_5m}
+
+**OI DATA (2-Hour Comparison):**
+{oi_summary}
+Support Zone: {current_oi.support_strike}
+Resistance Zone: {current_oi.resistance_strike}
+
+{news_section}
+
+---
+
+**ANALYSIS FRAMEWORK (Confluence-Based):**
+
+**STEP 1: 1H TREND ANALYSIS (Mandatory Filter)**
+- Overall trend direction (uptrend/downtrend/sideways)
+- Trend strength using HH/HL or LH/LL
+- Moving average position (simulate SMA20)
+- Recent break of structure?
+
+**STEP 2: 15M CHART PATTERN RECOGNITION**
+
+**A) CHART PATTERNS (Continuation + Reversal):**
+- Ascending/Descending Triangle
+- Symmetrical Triangle
+- Bull/Bear Flag
+- Pennant
+- Head & Shoulders / Inverse H&S
+- Double Top/Bottom
+- Triple Top/Bottom
+- Rising/Falling Wedge
+- Channel patterns
+
+**B) CANDLESTICK PATTERNS (Research-Based Rules):**
+
+**Single Candle Patterns:**
+- Hammer (Long lower shadow, small body, bullish at support)
+- Shooting Star (Long upper shadow, bearish at resistance)
+- Doji (Indecision, needs confirmation)
+- Dragonfly Doji (Bullish reversal)
+- Gravestone Doji (Bearish reversal)
+- Spinning Top (Indecision)
+- Marubozu (Strong trend continuation)
+
+**Double Candle Patterns:**
+- Bullish/Bearish Engulfing (70%+ success with volume)
+- Tweezer Top/Bottom (55% win rate, needs confirmation)
+- Harami (Indecision after trend)
+- Piercing Line / Dark Cloud Cover
+
+**Triple Candle Patterns:**
+- Morning Star / Evening Star (Reversal)
+- Three White Soldiers / Three Black Crows (Strong trend)
+- Abandoned Baby (Rare but powerful)
+
+**CONFLUENCE RULES (From Research):**
+1. Pattern at S/R level = +20% reliability (StockCharts.com)
+2. Pattern + Volume spike = +25% success (TradingView)
+3. Multi-timeframe alignment = +30% probability (XS.com)
+4. Pattern + OI confirmation = +35% win rate (Strike.money)
+
+**STEP 3: SUPPORT & RESISTANCE (15M Chart)**
+- Identify minimum 3-4 key levels (2-3 tests minimum)
+- Psychological levels (round numbers)
+- Current price position relative to S/R
+- Order blocks / demand-supply zones
+
+**STEP 4: MARKET STRUCTURE**
+- Higher highs + higher lows = Bullish structure
+- Lower highs + lower lows = Bearish structure
+- Break of structure (BOS) detected?
+- Change of character (CHoCH)?
+
+**STEP 5: VOLUME ANALYSIS**
+- Volume at key S/R levels
+- Climax volume bars (>1.5× average = significant)
+- Volume divergence with price (bearish if price up, volume down)
+- Volume confirmation on pattern breakout
+
+**STEP 6: OI FLOW ANALYSIS (CRITICAL)**
+
+**OI INTERPRETATION RULES:**
+- **CE Unwinding (-ve):** Resistance weakening = BULLISH signal
+- **PE Unwinding (-ve):** Support weakening = BEARISH signal
+- **CE Building (+ve):** Resistance strengthening = BEARISH signal
+- **PE Building (+ve):** Support strengthening = BULLISH signal
+
+**PCR Interpretation:**
+- PCR > 1.2 = Bullish sentiment (Put writers confident)
+- PCR < 0.8 = Bearish sentiment (Call writers confident)
+- PCR 0.8-1.2 = Neutral
+
+**Pattern-OI Confluence (Professional Rule):**
+- Bullish Pattern + CE Unwinding = HIGH PROBABILITY BUY (Score +30)
+- Bullish Pattern + PE Building = MODERATE BUY (Score +20)
+- Bearish Pattern + PE Unwinding = HIGH PROBABILITY SELL (Score +30)
+- Bearish Pattern + CE Building = MODERATE SELL (Score +20)
+- Pattern without OI support = REJECT (Score -20)
+
+**STEP 7: MULTI-TIMEFRAME CONFLUENCE**
+- 1H trend MUST align with 15M setup
+- 5M used ONLY for entry/exit precision
+- Counter-trend trades = REJECTED
+
+**STEP 8: TRADE SETUP (5M Entry/Exit)**
+
+**IF HIGH PROBABILITY SETUP FOUND:**
+- Entry: Use 5M chart for precise entry (current spot or breakout level)
+- Stop Loss: Beyond recent swing low/high on 5M + 0.3× ATR
+- Target 1: Minimum 1:2 Risk:Reward
+- Target 2: Minimum 1:3.5 Risk:Reward
+- Recommended Strike: Nearest ATM/ITM
+
+**REJECTION CRITERIA:**
+- No clear 1H trend = WAIT
+- Conflicting 1H vs 15M = WAIT
+- Pattern without OI confirmation = WAIT
+- Choppy/unclear price action = WAIT
+- Risk:Reward < 1:1.5 = WAIT
+
+**STEP 9: RISK FACTORS**
+- Nearby major S/R blocking move?
+- News sentiment contradicting setup?
+- Low volume on key levels?
+- Multiple Doji candles (indecision)?
+
+---
+
+**OUTPUT FORMAT (JSON ONLY, NO MARKDOWN):**
+
+{{
+  "opportunity": "CE_BUY/PE_BUY/WAIT",
+  "confidence": 85,
+  "entry_price": {spot_price:.2f},
+  "stop_loss": 0.0,
+  "target_1": 0.0,
+  "target_2": 0.0,
+  "risk_reward": "1:2.5",
+  "chart_bias": "Bullish/Bearish/Neutral",
+  "market_structure": "HH/HL forming",
+  "pattern_signal": "Bullish Flag + Hammer",
+  "oi_flow_signal": "CE Unwinding at resistance",
+  "support_levels": [0.0, 0.0, 0.0],
+  "resistance_levels": [0.0, 0.0, 0.0],
+  "risk_factors": ["Risk 1", "Risk 2"],
+  "ai_reasoning": "1H BULLISH trend + 15M Bullish Flag breakout + Hammer at support + CE unwinding (resistance breaking) + Volume spike on breakout = HIGH PROBABILITY BUY. 5M shows precise entry at ₹48050 with SL at ₹47920 (recent swing low - 0.3×ATR)."
+}}
+
+**IMPORTANT:**
+- Be brutally honest. If no clear setup, return "WAIT"
+- Pattern without OI confirmation = REJECT
+- News sentiment can add ±5% confidence
+- Minimum 4 confluence factors for signal
+- All targets must satisfy Risk:Reward ≥ 1:2
+"""
+        
+        return prompt
+    
+    @staticmethod
+    def parse_ai_response(content: str) -> Optional[AIAnalysis]:
+        """Extract JSON from AI response"""
+        try:
+            # Remove markdown code blocks if present
+            content = content.replace('```json', '').replace('```', '').strip()
+            
+            # Try direct JSON parse
+            try:
+                analysis = json.loads(content)
+            except:
+                # Regex fallback
+                import re
+                match = re.search(r'\{(?:[^{}]|(?:\{[^{}]*\}))*\}', content, re.DOTALL)
+                if match:
+                    analysis = json.loads(match.group(0))
+                else:
+                    return None
+            
+            return AIAnalysis(
+                opportunity=analysis.get('opportunity', 'WAIT'),
+                confidence=analysis.get('confidence', 0),
+                entry_price=analysis.get('entry_price', 0),
+                stop_loss=analysis.get('stop_loss', 0),
+                target_1=analysis.get('target_1', 0),
+                target_2=analysis.get('target_2', 0),
+                risk_reward=analysis.get('risk_reward', '0:0'),
+                chart_bias=analysis.get('chart_bias', 'Neutral'),
+                market_structure=analysis.get('market_structure', 'Unknown'),
+                pattern_signal=analysis.get('pattern_signal', 'None'),
+                oi_flow_signal=analysis.get('oi_flow_signal', 'Neutral'),
+                support_levels=analysis.get('support_levels', []),
+                resistance_levels=analysis.get('resistance_levels', []),
+                risk_factors=analysis.get('risk_factors', []),
+                ai_reasoning=analysis.get('ai_reasoning', 'No reasoning provided')
+            )
+        except Exception as e:
+            logger.error(f"AI parse error: {e}")
+            return None
+    
+    @staticmethod
+    def analyze(symbol: str, df_1h: pd.DataFrame, df_15m: pd.DataFrame, df_5m: pd.DataFrame,
+               spot_price: float, atr: float, current_oi: OIData, prev_oi: Optional[OIData],
+               news: Optional[NewsData]) -> Optional[AIAnalysis]:
+        """Send request to DeepSeek V3"""
+        try:
+            prompt = DeepSeekAnalyzer.generate_professional_prompt(
+                symbol, df_1h, df_15m, df_5m, spot_price, atr, current_oi, prev_oi, news
+            )
+            
+            logger.info(f"  🤖 Calling DeepSeek V3...")
+            
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "You are an expert F&O trader. Analyze data and respond ONLY in JSON format."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 3000
+                },
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"  ❌ DeepSeek API error: {response.status_code}")
+                return None
+            
+            ai_content = response.json()['choices'][0]['message']['content']
+            analysis = DeepSeekAnalyzer.parse_ai_response(ai_content)
+            
+            if analysis:
+                logger.info(f"  🤖 AI: {analysis.opportunity} | Conf: {analysis.confidence}% | {analysis.pattern_signal}")
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"  ❌ DeepSeek analysis error: {e}")
+            traceback.print_exc()
+            return None
 
 # ==================== CHART GENERATOR ====================
 class ChartGenerator:
     @staticmethod
-    def create_chart(symbol: str, df: pd.DataFrame, setup: GoldenSetup, spot: float, path: str):
+    def create_professional_chart(symbol: str, df: pd.DataFrame, analysis: AIAnalysis,
+                                  spot: float, path: str):
+        """Generate TradingView-style chart"""
         BG, GRID, TEXT = '#131722', '#1e222d', '#d1d4dc'
         GREEN, RED, YELLOW = '#26a69a', '#ef5350', '#ffd700'
         
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), gridspec_kw={'height_ratios': [3, 1]}, facecolor=BG)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), 
+                                       gridspec_kw={'height_ratios': [3, 1]}, facecolor=BG)
         
         ax1.set_facecolor(BG)
-        df_plot = df.tail(100).reset_index(drop=True)
+        df_plot = df.tail(150).reset_index(drop=True)
         
-        # Candles
+        # Candlesticks
         for idx, row in df_plot.iterrows():
             color = GREEN if row['close'] > row['open'] else RED
             ax1.add_patch(Rectangle((idx, min(row['open'], row['close'])), 0.6,
                                    abs(row['close'] - row['open']), facecolor=color, alpha=0.8))
             ax1.plot([idx+0.3, idx+0.3], [row['low'], row['high']], color=color, linewidth=1, alpha=0.6)
         
-        # Zones
-        ax1.axhline(setup.chart_support, color=GREEN, linestyle='--', linewidth=1.5, alpha=0.7)
-        ax1.axhline(setup.chart_resistance, color=RED, linestyle='--', linewidth=1.5, alpha=0.7)
+        # Support/Resistance
+        for sup in analysis.support_levels[:3]:
+            if sup > 0:
+                ax1.axhline(sup, color=GREEN, linestyle='--', linewidth=1.5, alpha=0.7)
+                ax1.text(len(df_plot)*0.02, sup, f'S: ₹{sup:.1f}', color=GREEN, fontsize=9, 
+                        bbox=dict(boxstyle='round', facecolor=BG, alpha=0.7))
+        
+        for res in analysis.resistance_levels[:3]:
+            if res > 0:
+                ax1.axhline(res, color=RED, linestyle='--', linewidth=1.5, alpha=0.7)
+                ax1.text(len(df_plot)*0.02, res, f'R: ₹{res:.1f}', color=RED, fontsize=9,
+                        bbox=dict(boxstyle='round', facecolor=BG, alpha=0.7))
         
         # Entry/SL/Targets
-        if setup.signal != "WAIT":
-            ax1.scatter([len(df_plot)-1], [setup.entry_price], color=YELLOW, s=300, marker='D', zorder=5)
-            ax1.axhline(setup.stop_loss, color=RED, linewidth=2, linestyle=':')
-            ax1.axhline(setup.target_1, color=GREEN, linewidth=2, linestyle=':')
-            ax1.axhline(setup.target_2, color=GREEN, linewidth=1.5, linestyle=':')
+        if analysis.opportunity != "WAIT":
+            ax1.scatter([len(df_plot)-1], [analysis.entry_price], color=YELLOW, s=300, 
+                       marker='D', zorder=5, edgecolors='white', linewidths=2)
+            ax1.axhline(analysis.stop_loss, color=RED, linewidth=2.5, linestyle=':')
+            ax1.axhline(analysis.target_1, color=GREEN, linewidth=2, linestyle=':')
+            ax1.axhline(analysis.target_2, color=GREEN, linewidth=1.5, linestyle=':')
+            
+            # Labels
+            ax1.text(len(df_plot)*0.98, analysis.entry_price, f'ENTRY: ₹{analysis.entry_price:.2f}  ',
+                    color=YELLOW, fontsize=10, ha='right', va='center',
+                    bbox=dict(boxstyle='round', facecolor=BG, edgecolor=YELLOW, linewidth=2))
         
         # Info Box
-        info = f"""{'🟢 BUY' if setup.signal=='HIGH_PROB_BUY' else '🔴 SELL' if setup.signal=='HIGH_PROB_SELL' else '⏸️ WAIT'}
-Conf: {setup.confidence}%
-Zone: ₹{setup.zone_price:.0f}
-Pattern: {setup.trigger_pattern.split('@')[0]}
-OI: {setup.oi_confirmation[:30]}
+        info = f"""{'🟢 BUY' if analysis.opportunity=='CE_BUY' else '🔴 SELL' if analysis.opportunity=='PE_BUY' else '⏸️ WAIT'}
+Confidence: {analysis.confidence}%
 
-Entry: ₹{setup.entry_price:.1f}
-SL: ₹{setup.stop_loss:.1f}
-T1: ₹{setup.target_1:.1f}
-T2: ₹{setup.target_2:.1f}"""
+Bias: {analysis.chart_bias}
+Structure: {analysis.market_structure}
+Pattern: {analysis.pattern_signal[:30]}
+
+OI Flow: {analysis.oi_flow_signal[:30]}
+
+Entry: ₹{analysis.entry_price:.1f}
+SL: ₹{analysis.stop_loss:.1f}
+T1: ₹{analysis.target_1:.1f}
+T2: ₹{analysis.target_2:.1f}
+R:R: {analysis.risk_reward}"""
         
-        ax1.text(0.01, 0.99, info, transform=ax1.transAxes, fontsize=9, va='top',
-                bbox=dict(boxstyle='round', facecolor=GRID, alpha=0.95), color=TEXT, family='monospace')
+        ax1.text(0.01, 0.99, info, transform=ax1.transAxes, fontsize=8, va='top',
+                bbox=dict(boxstyle='round', facecolor=GRID, alpha=0.95, edgecolor=TEXT),
+                color=TEXT, family='monospace')
         
-        ax1.set_title(f"{symbol} | 15M | Golden Setup Finder", color=TEXT, fontsize=13, fontweight='bold')
+        # Title
+        title = f"{symbol} | 15M | DeepSeek V3 Analysis | Conf: {analysis.confidence}%"
+        if analysis.pattern_signal:
+            title += f" | {analysis.pattern_signal}"
+        
+        ax1.set_title(title, color=TEXT, fontsize=13, fontweight='bold', pad=15)
         ax1.grid(True, color=GRID, alpha=0.3)
         ax1.tick_params(colors=TEXT)
+        ax1.set_ylabel('Price (₹)', color=TEXT, fontsize=11)
         
         # Volume
         ax2.set_facecolor(BG)
-        colors = [GREEN if df_plot.iloc[i]['close']>df_plot.iloc[i]['open'] else RED for i in range(len(df_plot))]
+        colors = [GREEN if df_plot.iloc[i]['close']>df_plot.iloc[i]['open'] else RED 
+                 for i in range(len(df_plot))]
         ax2.bar(range(len(df_plot)), df_plot['volume'], color=colors, alpha=0.6)
+        ax2.set_ylabel('Volume', color=TEXT, fontsize=10)
         ax2.tick_params(colors=TEXT)
         ax2.grid(True, color=GRID, alpha=0.3)
         
         plt.tight_layout()
         plt.savefig(path, dpi=150, facecolor=BG)
         plt.close()
+        logger.info(f"  📊 Chart saved: {path}")
 
 # ==================== DATA FETCHER ====================
 class UpstoxDataFetcher:
@@ -628,8 +776,7 @@ class UpstoxDataFetcher:
                     strikes.append(StrikeData(
                         strike=int(item.get('strike_price', 0)),
                         ce_oi=call.get('oi', 0), pe_oi=put.get('oi', 0),
-                        ce_volume=call.get('volume', 0), pe_volume=put.get('volume', 0),
-                        ce_price=call.get('ltp', 0), pe_price=put.get('ltp', 0)
+                        ce_volume=call.get('volume', 0), pe_volume=put.get('volume', 0)
                     ))
                 return strikes
             return []
@@ -645,23 +792,26 @@ class HybridBot:
     
     async def send_startup_message(self):
         message = f"""
-🚀 **HYBRID BOT v24.0 - GOLDEN SETUP FINDER**
+🚀 **HYBRID BOT v25.0 - DEEPSEEK V3 + FINNHUB**
 
 ⏰ **Time:** {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')}
 
 📊 **Features:**
-✅ Multi-Timeframe: 1H (Trend) + 15M (Analysis) + 5M (Entry)
-✅ Golden Setup Finder (4-Signal Confluence)
-✅ Token-Optimized AI Prompts
-✅ Corrected OI Logic
-✅ Professional Charts
+✅ DeepSeek V3 AI Analysis (All Patterns + Rules)
+✅ Finnhub News Integration
+✅ Multi-Timeframe: 1H (50) + 15M (500) + 5M (100)
+✅ OHLC Short Format (Token Optimized)
+✅ Volume + OI + Chart + Candlestick Confluence
+✅ Professional Research-Based Rules
 
 📈 **Monitoring:**
-- 2 Indices + 5 F&O Stocks
+- 2 Indices (BANKNIFTY, MIDCPNIFTY)
+- 37 F&O Stocks (All Sectors)
 
 🎯 **Alert Criteria:**
-- 4/4 Confluence Signals
-- Confidence ≥ 85%
+- Confidence ≥ 80%
+- Multi-factor Confluence
+- OI + Pattern Alignment
 
 📡 **Scan Interval:** 15 minutes
 🔄 **Status:** Active
@@ -669,50 +819,52 @@ class HybridBot:
         await self.telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode='Markdown')
         logger.info("✅ Startup message sent")
     
-    async def send_alert(self, symbol: str, setup: GoldenSetup, chart_path: str, 
-                        trend_1h: str, price_summary: str, oi_summary: str):
+    async def send_alert(self, symbol: str, analysis: AIAnalysis, chart_path: str,
+                        oi_summary: str, news: Optional[NewsData]):
         try:
             # Send Chart
             with open(chart_path, 'rb') as photo:
                 await self.telegram_bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo)
             
-            # Send Details
-            risk = abs(setup.entry_price - setup.stop_loss)
-            reward1 = abs(setup.target_1 - setup.entry_price)
-            rr = reward1 / risk if risk > 0 else 0
+            # Calculate RR
+            risk = abs(analysis.entry_price - analysis.stop_loss)
+            reward = abs(analysis.target_1 - analysis.entry_price)
+            rr = reward / risk if risk > 0 else 0
             
+            # Message
             message = f"""
-🚨 **{symbol} {setup.signal}**
+🚨 **{symbol} {analysis.opportunity}**
 
-📊 **Golden Setup Detected!**
-Confidence: {setup.confidence}%
-Confluence: {setup.confluence_count}/4 signals
+🤖 **DeepSeek V3 Analysis**
+Confidence: {analysis.confidence}%
 
-📈 **Multi-Timeframe Analysis:**
-1H Trend: {trend_1h}
-15M Zone: ₹{setup.zone_price:.0f}
-15M Pattern: {setup.trigger_pattern.split('@')[0]}
-5M Entry: ₹{setup.entry_price:.2f}
-
-📊 **Price Action (15M):**
-{price_summary}
+📊 **Market View:**
+Bias: {analysis.chart_bias}
+Structure: {analysis.market_structure}
+Pattern: {analysis.pattern_signal}
 
 📊 **OI Flow:**
 {oi_summary}
-{setup.oi_confirmation}
+Signal: {analysis.oi_flow_signal}
 
 💰 **Trade Setup:**
-Entry: ₹{setup.entry_price:.2f}
-Stop Loss: ₹{setup.stop_loss:.2f}
-Target 1: ₹{setup.target_1:.2f}
-Target 2: ₹{setup.target_2:.2f}
+Entry: ₹{analysis.entry_price:.2f}
+Stop Loss: ₹{analysis.stop_loss:.2f}
+Target 1: ₹{analysis.target_1:.2f}
+Target 2: ₹{analysis.target_2:.2f}
 Risk:Reward: 1:{rr:.1f}
 
-📝 **Confluence:**
-{setup.reason}
+🧠 **AI Reasoning:**
+{analysis.ai_reasoning[:300]}...
 
-🕐 {datetime.now(IST).strftime('%d-%b %H:%M:%S')}
+⚠️ **Risk Factors:**
+{', '.join(analysis.risk_factors[:3])}
 """
+            
+            if news:
+                message += f"\n📰 **News ({news.source}):**\n{news.headline}\nSentiment: {news.sentiment}"
+            
+            message += f"\n\n🕐 {datetime.now(IST).strftime('%d-%b %H:%M:%S')}"
             
             await self.telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode='Markdown')
             logger.info(f"  ✅ Alert sent for {symbol}")
@@ -732,24 +884,20 @@ Risk:Reward: 1:{rr:.1f}
             expiry = ExpiryCalculator.get_monthly_expiry(symbol_name)
             logger.info(f"  📅 Expiry: {expiry}")
             
-            # 2. Fetch 1-min data (10 days)
-            df_1m = self.data_fetcher.get_historical(instrument_key, "1minute", days=10)
+            # 2. Fetch 1-min data
+            df_1m = self.data_fetcher.get_historical(instrument_key, "1minute", days=15)
             if df_1m.empty:
                 logger.warning(f"  ⚠️ No data")
                 return
             
-            # 3. Resample to timeframes
+            # 3. Resample
             df_1h = MultiTimeframeProcessor.resample(df_1m, '1H')
             df_15m = MultiTimeframeProcessor.resample(df_1m, '15T')
             df_5m = MultiTimeframeProcessor.resample(df_1m, '5T')
             
             logger.info(f"  📊 Data: 1H({len(df_1h)}) | 15M({len(df_15m)}) | 5M({len(df_5m)})")
             
-            # 4. Get 1H Trend
-            trend_1h, conf_1h = MultiTimeframeProcessor.get_trend(df_1h)
-            logger.info(f"  📊 1H Trend: {trend_1h} ({conf_1h}%)")
-            
-            # 5. Spot Price & ATR
+            # 4. Spot & ATR
             spot_price = self.data_fetcher.get_ltp(instrument_key)
             if spot_price == 0:
                 spot_price = df_15m['close'].iloc[-1]
@@ -760,19 +908,18 @@ Risk:Reward: 1:{rr:.1f}
             atr = df_15m['tr'].rolling(14).mean().iloc[-1]
             logger.info(f"  💹 Spot: ₹{spot_price:.2f} | ATR: {atr:.2f}")
             
-            # 6. Option Chain
+            # 5. Option Chain
             all_strikes = self.data_fetcher.get_option_chain(instrument_key, expiry)
             if not all_strikes:
                 logger.warning(f"  ⚠️ No OI data")
                 return
             
-            # Get top 15 ATM strikes
             atm = round(spot_price / 100) * 100
             atm_range = range(atm - 700, atm + 800, 100)
             top_15 = sorted([s for s in all_strikes if s.strike in atm_range],
                           key=lambda x: (x.ce_oi + x.pe_oi), reverse=True)[:15]
             
-            # 7. OI Analysis
+            # 6. OI Analysis
             total_ce = sum(s.ce_oi for s in top_15)
             total_pe = sum(s.pe_oi for s in top_15)
             pcr = total_pe / total_ce if total_ce > 0 else 0
@@ -780,10 +927,8 @@ Risk:Reward: 1:{rr:.1f}
             max_ce_strike = max(top_15, key=lambda x: x.ce_oi).strike
             max_pe_strike = max(top_15, key=lambda x: x.pe_oi).strike
             
-            # Get previous OI
             prev_oi = RedisOIManager.get_comparison_oi(symbol_name, expiry, datetime.now(IST))
             
-            # Calculate changes
             ce_change_pct = 0.0
             pe_change_pct = 0.0
             if prev_oi:
@@ -800,47 +945,55 @@ Risk:Reward: 1:{rr:.1f}
                 ce_oi_change_pct=ce_change_pct, pe_oi_change_pct=pe_change_pct
             )
             
-            logger.info(f"  📊 PCR: {pcr:.2f} | S: {max_pe_strike} | R: {max_ce_strike} | CE: {ce_change_pct:+.1f}% | PE: {pe_change_pct:+.1f}%")
+            logger.info(f"  📊 PCR: {pcr:.2f} | S: {max_pe_strike} | R: {max_ce_strike}")
+            logger.info(f"     CE: {ce_change_pct:+.1f}% | PE: {pe_change_pct:+.1f}%")
             
-            # 8. Save OI
+            # 7. Save OI
             RedisOIManager.save_oi(symbol_name, expiry, current_oi)
             
-            # 9. Golden Setup Finder
-            setup = GoldenSetupFinder.find_golden_setup(
+            # 8. Fetch News
+            news_data = NewsFetcher.fetch_finnhub_news(symbol_name)
+            if news_data:
+                logger.info(f"  📰 {news_data.headline[:60]}... [{news_data.sentiment}]")
+            
+            # 9. DeepSeek AI Analysis
+            analysis = DeepSeekAnalyzer.analyze(
+                symbol=display_name,
+                df_1h=df_1h,
                 df_15m=df_15m,
                 df_5m=df_5m,
                 spot_price=spot_price,
                 atr=atr,
                 current_oi=current_oi,
                 prev_oi=prev_oi,
-                trend_1h=trend_1h
+                news=news_data
             )
             
-            logger.info(f"  🎯 Setup: {setup.signal} | Conf: {setup.confidence}% | Confluence: {setup.confluence_count}/4")
-            logger.info(f"     {setup.reason.split(chr(10))[0]}")
+            if not analysis:
+                logger.info(f"  ⏸️ No AI analysis")
+                return
             
-            # 10. Check alert threshold
-            if setup.signal != "WAIT" and setup.confidence >= 85 and setup.confluence_count == 4:
-                signal_key = f"{symbol_name}_{setup.signal}_{datetime.now(IST).strftime('%Y%m%d_%H')}"
+            # 10. Check threshold
+            if analysis.opportunity != "WAIT" and analysis.confidence >= 80:
+                signal_key = f"{symbol_name}_{analysis.opportunity}_{datetime.now(IST).strftime('%Y%m%d_%H')}"
                 
                 if signal_key not in self.processed_signals:
-                    logger.info(f"  🚨 GOLDEN SETUP ALERT!")
+                    logger.info(f"  🚨 HIGH CONFIDENCE SIGNAL!")
                     
                     # Generate chart
-                    chart_path = f"/tmp/{symbol_name}_golden.png"
-                    ChartGenerator.create_chart(display_name, df_15m, setup, spot_price, chart_path)
+                    chart_path = f"/tmp/{symbol_name}_deepseek.png"
+                    ChartGenerator.create_professional_chart(display_name, df_15m, analysis, spot_price, chart_path)
                     
-                    # Compress data for message
-                    price_summary = DataCompressor.compress_candles(df_15m)
+                    # OI summary
                     oi_summary = DataCompressor.compress_oi(current_oi, prev_oi)
                     
                     # Send alert
-                    await self.send_alert(display_name, setup, chart_path, trend_1h, price_summary, oi_summary)
+                    await self.send_alert(display_name, analysis, chart_path, oi_summary, news_data)
                     self.processed_signals.add(signal_key)
                 else:
                     logger.info(f"  ⏭️ Already alerted")
             else:
-                logger.info(f"  ⏸️ No alert: {'Low confidence' if setup.confidence < 85 else 'Incomplete confluence'}")
+                logger.info(f"  ⏸️ {analysis.opportunity} | Conf: {analysis.confidence}% (Below threshold)")
             
         except Exception as e:
             logger.error(f"Analysis error: {e}")
@@ -848,7 +1001,7 @@ Risk:Reward: 1:{rr:.1f}
     
     async def run_scanner(self):
         logger.info("\n" + "="*80)
-        logger.info("🚀 HYBRID BOT v24.0 - GOLDEN SETUP FINDER")
+        logger.info("🚀 HYBRID BOT v25.0 - DEEPSEEK V3 + FINNHUB PROFESSIONAL")
         logger.info("="*80)
         
         await self.send_startup_message()
@@ -875,7 +1028,7 @@ Risk:Reward: 1:{rr:.1f}
                 # Scan all symbols
                 for instrument_key, symbol_info in ALL_SYMBOLS.items():
                     await self.analyze_symbol(instrument_key, symbol_info)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)  # 3 sec delay for AI processing
                 
                 logger.info(f"\n✅ Scan complete. Next in 15 min...")
                 await asyncio.sleep(900)
