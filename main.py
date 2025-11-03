@@ -1155,11 +1155,9 @@ Next scan in 15 minutes or at market open...
             logger.info(f"🔍 {display_name} ({symbol_name})")
             logger.info(f"{'='*70}")
             
-            # 1. Expiry (API format + Display format)
-            expiry_api = ExpiryCalculator.get_monthly_expiry(symbol_name)
-            expiry_display = ExpiryCalculator.get_display_expiry(symbol_name)
-            
-            logger.info(f"  📅 Expiry: {expiry_display} (API: {expiry_api})")
+            # 1. Expiry
+            expiry = ExpiryCalculator.get_monthly_expiry(symbol_name)
+            logger.info(f"  📅 Expiry: {expiry}")
             logger.info(f"     Instrument Key: {instrument_key}")
             
             # 2. Fetch 1-min data
@@ -1187,13 +1185,13 @@ Next scan in 15 minutes or at market open...
             logger.info(f"  💹 Spot: ₹{spot_price:.2f} | ATR: {atr:.2f}")
             
             # 5. Option Chain with retry logic
-            all_strikes = self.data_fetcher.get_option_chain(instrument_key, expiry_api)
+            all_strikes = self.data_fetcher.get_option_chain(instrument_key, expiry)
             
             if not all_strikes:
                 logger.warning(f"  ⚠️ No OI data available")
                 logger.info(f"     Possible reasons:")
                 logger.info(f"     - No options trading for this symbol")
-                logger.info(f"     - Expiry date: {expiry_api} not available")
+                logger.info(f"     - Expiry date mismatch")
                 logger.info(f"     - API rate limit")
                 logger.info(f"  ⏭️ Skipping to next symbol...")
                 return
@@ -1218,7 +1216,7 @@ Next scan in 15 minutes or at market open...
             max_ce_strike = max(top_15, key=lambda x: x.ce_oi).strike
             max_pe_strike = max(top_15, key=lambda x: x.pe_oi).strike
             
-            prev_oi = RedisOIManager.get_comparison_oi(symbol_name, expiry_display, datetime.now(IST))
+            prev_oi = RedisOIManager.get_comparison_oi(symbol_name, expiry, datetime.now(IST))
             
             ce_change_pct = 0.0
             pe_change_pct = 0.0
@@ -1239,8 +1237,8 @@ Next scan in 15 minutes or at market open...
             logger.info(f"  📊 PCR: {pcr:.2f} | S: {max_pe_strike} | R: {max_ce_strike}")
             logger.info(f"     CE: {ce_change_pct:+.1f}% | PE: {pe_change_pct:+.1f}%")
             
-            # 7. Save OI (use display format for Redis key)
-            RedisOIManager.save_oi(symbol_name, expiry_display, current_oi)
+            # 7. Save OI
+            RedisOIManager.save_oi(symbol_name, expiry, current_oi)
             
             # 8. Fetch News
             news_data = NewsFetcher.fetch_finnhub_news(symbol_name)
